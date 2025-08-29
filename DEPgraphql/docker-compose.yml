@@ -1,0 +1,30 @@
+services:
+  member-service:
+    build: ./member-service
+    container_name: member-service-graphql
+    ports:
+      - "5000:5000"
+    networks:
+      - club_net
+    volumes:
+      - member_data:/app/db
+
+  resource-service:
+    build: ./resource-service
+    container_name: resource-service-graphql
+    ports:
+      - "5001:5000"
+    networks:
+      - club_net
+    depends_on:
+      - member-service
+    volumes:
+      - resource_data:/app/db
+
+networks:
+  club_net:
+    driver: bridge
+
+volumes:
+  member_data:
+  resource_data:
