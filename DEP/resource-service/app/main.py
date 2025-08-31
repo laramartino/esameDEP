@@ -76,13 +76,13 @@ def add_campo(booking: CampoBooking, db: Session = Depends(get_db)):
     return {"detail": "Booking added"}
 
 
-@router.delete("/campo")
-def delete_campo(booking: CampoBooking, db: Session = Depends(get_db)):
+@router.delete("/campo/{cf}/{data}/{ora}/{tipologia}")
+def delete_campo(cf: str, data: date, ora: int, tipologia: TipologiaEnum, db: Session = Depends(get_db)):
     prenotazione = db.query(PrenotazioniCampi).filter_by(
-        cf=booking.cf.upper(),
-        data=booking.data,
-        ora=booking.ora,
-        tipologia=booking.tipologia
+        cf=cf,
+        data=data,
+        ora=ora,
+        tipologia=tipologia
     ).first()
     if prenotazione:
         db.delete(prenotazione)
@@ -93,8 +93,10 @@ def delete_campo(booking: CampoBooking, db: Session = Depends(get_db)):
 
 @router.delete("/prenotazioni/{cf}")
 def delete_prenotazioni(cf: str, db: Session = Depends(get_db)):
-    db.query(PrenotazioniCampi).filter(PrenotazioniCampi.cf == cf).delete(synchronize_session=False)
-    db.query(PrenotazioniPiscina).filter(PrenotazioniPiscina.cf == cf).delete(synchronize_session=False)
+    db.query(PrenotazioniCampi).filter(PrenotazioniCampi.cf == cf,
+                                       PrenotazioniCampi.data >= date.today()).delete(synchronize_session=False)
+    db.query(PrenotazioniPiscina).filter(PrenotazioniPiscina.cf == cf,
+                                         PrenotazioniPiscina.data >= date.today()).delete(synchronize_session=False)
     db.commit()
     return
 
@@ -122,6 +124,14 @@ def add_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)):
     if not check_member(cf):
         raise HTTPException(status_code=404, detail="cf doesn't exist")
 
+    # Controllo doppia prenotazione
+    existing = db.query(PrenotazioniPiscina).filter_by(
+        data=booking.data,
+        cf=cf
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"{cf} has already a reservation")
+
     # Validazione lettini
     lettini_prenotati = db.query(func.sum(PrenotazioniPiscina.lettini)).filter(
         PrenotazioniPiscina.data == booking.data
@@ -138,14 +148,6 @@ def add_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)):
         ombrelloni_disponibili = 20 - ombrelloni_prenotati
         raise HTTPException(status_code=409, detail=f"Only {ombrelloni_disponibili} ombrelloni available on {booking.data}")
 
-    # Controllo doppia prenotazione
-    existing = db.query(PrenotazioniPiscina).filter_by(
-        data=booking.data,
-        cf=cf
-    ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"{cf} has already a reservation")
-
     # Creazione prenotazione
     new = PrenotazioniPiscina(
         cf=cf,
@@ -158,19 +160,17 @@ def add_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)):
     return {"detail": "Booking added"}
 
 
-@router.delete("/piscina")
-def delete_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)):
+@router.delete("/piscina/{cf}/{data}")
+def delete_piscina(cf: str, data: date, db: Session = Depends(get_db)):
     prenotazione = db.query(PrenotazioniPiscina).filter_by(
-        cf=booking.cf.upper(),
-        data=booking.data,
-        lettini=booking.lettini,
-        ombrelloni=booking.ombrelloni
-    ).first()
-    if prenotazione:
-        db.delete(prenotazione)
-        db.commit()
-        return {"detail": "Booking deleted"}
-    raise HTTPException(status_code=404, detail="Booking not found")
+        cf=cf.upper(),
+        data=data
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    if prenotazione == 0:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return {"detail": "Booking deleted"}
 
 
 app.include_router(router)
