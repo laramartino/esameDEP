@@ -12,8 +12,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 @contextmanager
-def get_db():
-    db = SessionLocal()
+def get_db() -> Session:
+    db: Session = SessionLocal()
     try:
         yield db
     finally:
