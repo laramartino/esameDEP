@@ -13,25 +13,25 @@ router = APIRouter(prefix="/resources", tags=["resources"])
 app = FastAPI(title="Resource Service")
 
 
-# --- Funzioni di supporto ---
+# Funzione di supporto per verificare se un membro esiste e quindi può effettuare prenotazioni
 def check_member(cf: str) -> bool:
+    member_service_url = f"http://member-service:5000/members/{cf}"
+
     try:
-        member_service_url = f"http://member-service:5000/members/{cf}"
         response = requests.get(member_service_url)
         if response.status_code == 404:
             return False
-        response.raise_for_status()
-        data = response.json()
+        response.raise_for_status()  # solleva eccezione per altri errori
         return True
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Cannot reach member service: {str(e)}")
 
 
-# --- Endpoints ---
+# mostra gli orari liberi di uno specifico campo in una certa data
 @router.get("/campiliberi/{data}/{tipologia}")
-def get_campo(data: date, tipologia: TipologiaEnum, db: Session = Depends(get_db)):
+def get_campo(data: date, tipologia: TipologiaEnum, db: Session = Depends(get_db)) -> Message:
 
-    ore_disponibili = range(10, 22)  # 10..21 inclusi
+    ore_disponibili = range(10, 22)
     liberi = []
 
     for ora in ore_disponibili:
@@ -45,17 +45,20 @@ def get_campo(data: date, tipologia: TipologiaEnum, db: Session = Depends(get_db
         if not prenotazione:
             liberi.append(ora)
 
-    return {"detail": liberi}
+    liberi_str = ", ".join(str(ora) for ora in liberi)
+    return Message(detail=liberi_str)
 
 
+# aggiunge la prenotazione di un campo
 @router.post("/campo")
-def add_campo(booking: CampoBooking, db: Session = Depends(get_db)):
-    # Controllo membro
+def add_campo(booking: CampoBooking, db: Session = Depends(get_db)) -> Message:
     cf = booking.cf.upper()
-    if not check_member(cf):
-        raise HTTPException(status_code=404, detail="cf doesn't exist")
 
-    # Controllo slot già prenotato
+    # verifica esistenza del membro
+    if not check_member(cf):
+        raise HTTPException(status_code=404, detail="Member doesn't exist")
+
+    # verifica se lo slot orario è già prenotato
     existing = db.query(PrenotazioniCampi).filter_by(
         data=booking.data,
         ora=booking.ora,
@@ -64,7 +67,7 @@ def add_campo(booking: CampoBooking, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=409, detail="Slot già prenotato")
 
-    # Creazione prenotazione
+    # creazione prenotazione
     new = PrenotazioniCampi(
         cf=cf,
         data=booking.data,
@@ -73,25 +76,29 @@ def add_campo(booking: CampoBooking, db: Session = Depends(get_db)):
     )
     db.add(new)
     db.commit()
-    return {"detail": "Booking added"}
+    return Message(detail="Booking added")
 
 
+# rimuove la prenotazione di un campo
 @router.delete("/campo/{cf}/{data}/{ora}/{tipologia}")
-def delete_campo(cf: str, data: date, ora: int, tipologia: TipologiaEnum, db: Session = Depends(get_db)):
+def delete_campo(cf: str, data: date, ora: int, tipologia: TipologiaEnum, db: Session = Depends(get_db)) -> Message:
     prenotazione = db.query(PrenotazioniCampi).filter_by(
         cf=cf,
         data=data,
         ora=ora,
-        tipologia=tipologia
-    ).first()
+        tipologia=tipologia).first()
+
+    # verifica se la prenotazione esiste
     if prenotazione:
         db.delete(prenotazione)
         db.commit()
-        return {"detail": "Booking deleted"}
+        return Message(detail="Booking deleted")
+
     raise HTTPException(status_code=404, detail="Booking not found")
 
 
-@router.delete("/prenotazioni/{cf}")
+# rimuove tutte le prenotazioni di un membro dalla data corrente in poi
+@router.delete("/prenotazioni/{cf}", status_code=204)   # 204 ok, no content
 def delete_prenotazioni(cf: str, db: Session = Depends(get_db)):
     db.query(PrenotazioniCampi).filter(PrenotazioniCampi.cf == cf,
                                        PrenotazioniCampi.data >= date.today()).delete(synchronize_session=False)
@@ -101,67 +108,75 @@ def delete_prenotazioni(cf: str, db: Session = Depends(get_db)):
     return
 
 
-@router.get("/piscinalibera/{data}")
-def get_piscina(data: date, db: Session = Depends(get_db)):
+# mostra il numero di lettini e ombrelloni liberi in una certa data
+@router.get("/piscinalibera/{data}", response_model=Message)
+def get_piscina(data: date, db: Session = Depends(get_db)) -> Message:
 
-    prenotazioni = db.query(PrenotazioniPiscina).filter(PrenotazioniPiscina.data == data).first()
+    # verifica che la richiesta non sia per il periodo di chiusura
+    mese, giorno = data.month, data.day
+    inizio = (5, 20)  # 20 maggio
+    fine = (9, 15)  # 15 settembre
+    if not (inizio <= (mese, giorno) <= fine):
+        return Message(detail="Piscina chiusa. Apertura nel periodo estivo dal 20 maggio al 15 settembre.")
 
-    if prenotazioni:
-        lettini_liberi = 80 - prenotazioni.lettini
-        ombrelloni_liberi = 20 - prenotazioni.ombrelloni
-    else:
-        lettini_liberi = 80
-        ombrelloni_liberi = 20
+    # somma totale di lettini e ombrelloni prenotati nella data richiesta
+    totale_prenotazioni = db.query(
+        func.coalesce(func.sum(PrenotazioniPiscina.lettini), 0),
+        func.coalesce(func.sum(PrenotazioniPiscina.ombrelloni), 0)
+    ).filter(PrenotazioniPiscina.data == data).one()
 
-    return {"detail": {"lettini_liberi": lettini_liberi,
-                        "ombrelloni_liberi": ombrelloni_liberi}}
+    prenotati_lettini, prenotati_ombrelloni = totale_prenotazioni
+
+    lettini_liberi = 80 - prenotati_lettini
+    ombrelloni_liberi = 20 - prenotati_ombrelloni
+
+    return Message(detail=f"{lettini_liberi} lettini e {ombrelloni_liberi} ombrelloni liberi")
 
 
+# aggiunge una prenotazione in piscina
 @router.post("/piscina")
-def add_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)):
-    # Controllo membro
+def add_piscina(booking: PiscinaBooking, db: Session = Depends(get_db)) -> Message:
     cf = booking.cf.upper()
-    if not check_member(cf):
-        raise HTTPException(status_code=404, detail="cf doesn't exist")
 
-    # Controllo doppia prenotazione
+    # verifica l'esistenza di un membro
+    if not check_member(cf):
+        raise HTTPException(status_code=404, detail="Member doesn't exist")
+
+    # verifica se il membro ha già una prenotazione per quella data
     existing = db.query(PrenotazioniPiscina).filter_by(
         data=booking.data,
-        cf=cf
-    ).first()
+        cf=cf).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"{cf} has already a reservation")
+        raise HTTPException(status_code=409, detail="Member has already a reservation")
 
-    # Validazione lettini
+    # verifica se ci sono abbastanza lettini
     lettini_prenotati = db.query(func.sum(PrenotazioniPiscina.lettini)).filter(
-        PrenotazioniPiscina.data == booking.data
-    ).scalar() or 0
+        PrenotazioniPiscina.data == booking.data).scalar() or 0
     if lettini_prenotati + booking.lettini > 80:
         lettini_disponibili = 80 - lettini_prenotati
         raise HTTPException(status_code=409, detail=f"Only {lettini_disponibili} lettini available on {booking.data}")
 
-    # Validazione ombrelloni
+    # verifica se ci sono abbastanza ombrelloni
     ombrelloni_prenotati = db.query(func.sum(PrenotazioniPiscina.ombrelloni)).filter(
-        PrenotazioniPiscina.data == booking.data
-    ).scalar() or 0
+        PrenotazioniPiscina.data == booking.data).scalar() or 0
     if ombrelloni_prenotati + booking.ombrelloni > 20:
         ombrelloni_disponibili = 20 - ombrelloni_prenotati
         raise HTTPException(status_code=409, detail=f"Only {ombrelloni_disponibili} ombrelloni available on {booking.data}")
 
-    # Creazione prenotazione
+    # aggiunta della prenotazione
     new = PrenotazioniPiscina(
         cf=cf,
         data=booking.data,
         lettini=booking.lettini,
-        ombrelloni=booking.ombrelloni
-    )
+        ombrelloni=booking.ombrelloni)
     db.add(new)
     db.commit()
-    return {"detail": "Booking added"}
+    return Message(detail="Booking added")
 
 
+# rimuove la prenotazione della piscina di un membro in una certa data
 @router.delete("/piscina/{cf}/{data}")
-def delete_piscina(cf: str, data: date, db: Session = Depends(get_db)):
+def delete_piscina(cf: str, data: date, db: Session = Depends(get_db)) -> Message:
     prenotazione = db.query(PrenotazioniPiscina).filter_by(
         cf=cf.upper(),
         data=data
@@ -170,7 +185,7 @@ def delete_piscina(cf: str, data: date, db: Session = Depends(get_db)):
 
     if prenotazione == 0:
         raise HTTPException(status_code=404, detail="Booking not found")
-    return {"detail": "Booking deleted"}
+    return Message(detail="Booking deleted")
 
 
 app.include_router(router)

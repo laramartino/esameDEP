@@ -2,7 +2,6 @@ from pydantic import BaseModel, constr
 from datetime import date
 
 
-# Schemi Pydantic
 class MemberCreate(BaseModel):
     cf: constr(strip_whitespace=True, min_length=16, max_length=16)
     name: constr(strip_whitespace=True, min_length=1)
@@ -14,3 +13,10 @@ class MemberOut(BaseModel):
     name: str
     surname: str
     registration_date: date
+
+    class Config:
+        orm_mode = True  # abilita la conversione automatica da SQLAlchemy
+
+
+class Message(BaseModel):
+    detail: str

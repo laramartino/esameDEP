@@ -13,26 +13,24 @@ app = FastAPI()
 router = APIRouter(prefix="/members", tags=["members"])
 
 
+# verifica se una persona è associata al club
 @router.get("/{cf}")
-def check_member(cf: str, db: Session = Depends(get_db)):
+def check_member(cf: str, db: Session = Depends(get_db)) -> MemberOut:
     member = db.query(Member).filter(Member.cf == cf.upper()).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
-    return MemberOut(
-        cf=member.cf,
-        name=member.name,
-        surname=member.surname,
-        registration_date=member.registration_date
-    )
+    return member
 
 
+# aggiunge un nuovo membro al club
 @router.post("", status_code=status.HTTP_201_CREATED)
-def add_member(member: MemberCreate, db: Session = Depends(get_db)):
+def add_member(member: MemberCreate, db: Session = Depends(get_db)) -> Message:
     cf = member.cf.upper()
 
+    # verifica se esiste già
     existing = db.query(Member).filter(Member.cf == cf).first()
     if existing:
-        return HTTPException(status_code=409, detail="Member already exists")
+        raise HTTPException(status_code=409, detail="Member already exists")
 
     new_member = Member(
         cf=cf,
@@ -42,30 +40,36 @@ def add_member(member: MemberCreate, db: Session = Depends(get_db)):
     )
     db.add(new_member)
     db.commit()
-    return {"detail": "Member added"}
+    return Message(detail="Member added")
 
 
+# rimuove un membro dal club
 @router.delete("/{cf}")
-def delete_member(cf: str, db: Session = Depends(get_db)):
-    member = db.query(Member).filter(Member.cf == cf.upper()).first()
+def delete_member(cf: str, db: Session = Depends(get_db)) -> Message:
+    cf = cf.upper()
+
+    # verifica se il membro esiste
+    member = db.query(Member).filter(Member.cf == cf).first()
     if not member:
-        return HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail="Member not found")
     db.delete(member)
     db.commit()
 
+    # rimozione delle prenotazioni del membro
     try:
-        url = f"http://resource-service:5000/resources/prenotazioni/{cf.upper()}"
+        url = f"http://resource-service:5000/resources/prenotazioni/{cf}"
         response = requests.delete(url)
-        if response.status_code != 200:
-            raise Exception("Errore nel cancellare le prenotazioni")
-    except Exception as e:
-        print(f"Warning: impossibile eliminare prenotazioni per {cf}: {e}")
+        if response.status_code != 204:
+            raise HTTPException(status_code=502, detail=f"Errore nel cancellare le prenotazioni per {cf}")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Servizio prenotazioni non raggiungibile: {str(e)}")
 
-    return {"detail": "Member deleted"}
+    return Message(detail="Member deleted")
 
 
+# mostra tutti i membri presenti
 @router.get("", response_model=List[MemberOut])
-def all_members(db: Session = Depends(get_db)):
+def all_members(db: Session = Depends(get_db)) -> List[MemberOut]:
     members = db.query(Member).all()
     return members
 

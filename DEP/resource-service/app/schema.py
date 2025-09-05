@@ -10,7 +10,6 @@ class TipologiaEnum(str, Enum):
     calcio = "calcio"
 
 
-# --- Schemi di validazione ---
 class CampoBooking(BaseModel):
     cf: constr(strip_whitespace=True, min_length=16, max_length=16)
     data: date
@@ -48,3 +47,5 @@ class PiscinaBooking(BaseModel):
         return v
 
 
+class Message(BaseModel):
+    detail: str
